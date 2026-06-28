@@ -1,0 +1,379 @@
+% !TEX root = main.tex
+% !TEX program = pdflatex
+\documentclass[reqno]{amsart}
+
+\usepackage[letterpaper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage{url}
+
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{algorithm}[theorem]{Algorithm}
+\newtheorem{remark}[theorem]{Remark}
+
+\DeclareMathOperator{\redc}{REDC}
+
+\title[Extended Montgomery reduction in $n^2+1$ digit multiplications]{Extended Montgomery reduction in $n^2+1$ digit multiplications and a Barrett--Montgomery duality}
+\author{Yuval Domb, Brian Koziel}
+
+\begin{document}
+
+\begin{abstract}
+Let $p>1$ be odd and let $R=r^n$ with $r=2^w$ coprime to~$p$.
+We exhibit a structural duality between Barrett and Montgomery modular reductions:
+writing a $2n$-digit integer $c=c_1R+c_0$, Barrett reduction assembles $c\bmod p$ from a reduction of $c_1R$ and the limb~$c_0$, whereas Montgomery reduction assembles $cR^{-1}\bmod p$ from a reduction of $c_0R^{-1}$ and the limb~$c_1$.
+Standard operand-scanning implementations of either method require $n^2+n$ digit multiplications.
+We introduce the \emph{extended Montgomery reduction}, which uses only $n^2+1$ digit multiplications by replacing the first $n-1$ reduction steps with multiplications by the precomputed constant $\rho_1 = r^{-1}\bmod p$.
+A dual $n^2+1$ extended Barrett reduction is obtained by the same principle.
+Two further variants, a fully parallel form and a logarithmic form, reduce limbs in fewer rounds at the same digit cost.
+\end{abstract}
+
+\keywords{Modular arithmetic, Montgomery reduction, Barrett reduction}
+\subjclass[2020]{Primary 11Y16; Secondary 68W30}
+
+\maketitle
+
+\section{Introduction}
+
+Modular multiplication in $\mathbb{Z}/p\mathbb{Z}$ for large unstructured primes~$p$ underlies RSA, elliptic-curve cryptography, and polynomial protocols over prime fields.
+Given a full product $c=ab$ with $0\le c<R^2$, where $R> p$ is a power of two, one must reduce~$c$ modulo~$p$.
+Division by~$p$ is avoided by precomputation: Barrett~\cite{barrett} estimates the quotient from a scaled reciprocal of the modulus, whereas Montgomery~\cite{montgomery} represents residues in the coset $\mathbb{F}_p R$ and clears each low digit using a precomputed inverse of the modulus with respect to the digit base.
+For multi-precision operands with $R=r^n$, the best operand-scanning Montgomery reduction currently known costs $n^2+n$ digit multiplications and at most as many additions as Montgomery's original loop.
+
+In this note we expand and formalize material first presented in~\cite{domb2025blog}.
+Section~\ref{sec:duality} presents the Barrett--Montgomery duality from the product representation $c=c_1R+c_0$.
+Section~\ref{sec:baseline} recalls Montgomery's operand-scanning reduction~\cite{montgomery} and the dual Barrett scan of~\cite{domb2025blog}, each costing $n^2+n$ digit multiplications.
+Section~\ref{sec:improved} introduces \emph{extended Montgomery reduction} (EMR), which needs only $n^2+1$ digit multiplications, a saving of $n-1$ multiplications per reduction over the standard method.
+Section~\ref{sec:parallel} gives parallel and logarithmic EMR variants at the same digit cost, and notes the dual extended Barrett reduction (EBR).
+Section~\ref{sec:overflow} bounds the normalization cost of each variant.
+Section~\ref{sec:impl} discusses implementation.
+Section~\ref{sec:apps} outlines applications to NTT, constant-matrix hashes, and projective elliptic-curve addition.
+
+Throughout, $p$ is an odd positive integer, $r=2^w$ is the digit base, $R=r^n$, and $n\ge 2$.
+Digits are written in base~$r$; for $x=\sum_{i=0}^{k-1} x_i r^i$ we write $x=(x_{k-1},\ldots,x_0)_r$.
+We assume $0<p<R$ and $\gcd(r,p)=1$.
+The duality and digit-count results hold for any input $0\le c<R^2$; the overflow and normalization bounds of Section~\ref{sec:overflow} assume $0\le c<pR$, as holds for a product of residues.
+
+\section{The Barrett--Montgomery duality}\label{sec:duality}
+
+Let $c$ satisfy $0\le c<R^2$.  Define limbs $c_0=c\bmod R$ and $c_1=\lfloor c/R\rfloor$, so that
+\begin{equation}\label{eq:split}
+  c = c_1 R + c_0, \qquad 0\le c_0<R,\quad 0\le c_1<R.
+\end{equation}
+
+\begin{theorem}[Barrett--Montgomery duality]\label{thm:duality}
+For every integer $c$ with $0\le c<R^2$,
+\begin{align}
+  c \bmod p &\equiv \bigl(c_1 R \bmod p\bigr) + c_0 \pmod p, \label{eq:barrett-dual}\\
+  c R^{-1} \bmod p &\equiv c_1 + \bigl(c_0 R^{-1} \bmod p\bigr) \pmod p. \label{eq:mont-dual}
+\end{align}
+The two identities are dual under the simultaneous exchanges $R\leftrightarrow R^{-1}$ and $c_0\leftrightarrow c_1$.
+\end{theorem}
+
+\begin{proof}
+From~\eqref{eq:split}, $c\equiv c_1R+c_0\pmod p$, giving~\eqref{eq:barrett-dual}.
+Multiplying both sides of~\eqref{eq:split} by~$R^{-1}$ and reducing modulo~$p$ gives~\eqref{eq:mont-dual}.
+The duality assertion is immediate from the symmetric form.
+\end{proof}
+
+\begin{remark}
+The decomposition~\eqref{eq:split} is an exact integer identity.
+Barrett reduction realizes~\eqref{eq:barrett-dual} by processing limbs from the most significant digit downward;
+Montgomery reduction realizes~\eqref{eq:mont-dual} by processing limbs from the least significant digit upward.
+\end{remark}
+
+\section{Multi-precision reduction in $n^2+n$ digit multiplications}\label{sec:baseline}
+
+Write a $2n$-digit product as
+\[
+  c = \sum_{i=0}^{2n-1} c'_i r^i, \qquad 0 \le c < R^2.
+\]
+
+\paragraph{Montgomery scan~\cite{montgomery}.}
+For $j=0,1,\ldots,n-1$, let $\tilde c_j$ denote the current least significant digit after $j$ prior reductions.
+Choose $m_j\in\{0,\ldots,r-1\}$ satisfying
+\[
+  \tilde c_j + m_j p \equiv 0 \pmod r,
+  \qquad\text{i.e.}\quad m_j = \mu_r \tilde c_j \bmod r,
+\]
+where $\mu_r= -p^{-1}\bmod r$ is precomputed.
+Add $m_jp$ to the current sum, then divide by~$r$ (the least significant digit is now zero).
+After $n$ rounds the sum is congruent to $cR^{-1}$ modulo~$p$; for an input with $0\le c<pR$ it satisfies $0\le S<2p$, so one conditional subtraction of~$p$ normalizes (Proposition~\ref{prop:base}).
+Each round uses one digit multiplication for~$m_j$ and $n$ digit multiplications to form~$m_jp$, hence $n^2+n$ digit multiplications in total.
+This is Montgomery's multiprecision $\redc$.
+
+\paragraph{Barrett scan~\cite{domb2025blog}.}
+Choose the least integer $k\ge 1$ with $kp>R$; this ensures the quotient digit $m_j$ remains a single digit.
+For $j=0,1,\ldots,n-1$, let $\tilde c_j$ be the current most significant digit and set
+\[
+  m_j = \bigl\lfloor \hat\mu_r\, \tilde c_j / r \bigr\rfloor,
+  \qquad \hat\mu_r = \bigl\lfloor rR/(kp) \bigr\rfloor,
+\]
+so that $m_j$ is the largest single digit such that subtracting $m_j kp$ (left-aligned) from the current sum is nonneg\-ative.
+Since $m_j$ uses only $\tilde c_j$, the subtraction may remove one fewer copy of~$kp$ than would zero that digit, leaving a most significant digit of~$1$ rather than~$0$; record this bit and discard the digit.
+After $n$ rounds the low part is $\alpha<R$, and the $n$ recorded bits determine a correction $\beta$ from a precomputed set of $2^n$ values, giving $\alpha+\beta$; a final addition and at most $k$ subtractions of~$p$ normalize.
+The digit cost is again $n^2+n$ digit multiplications.
+
+\begin{remark}[Why Montgomery is preferred on CPUs]\label{rem:causal}
+In the Montgomery scan, carries from adding $m_jp$ propagate to more significant limbs that are yet to be processed; overflows are causal.
+In the Barrett scan, the dual ordering causes non-causal overflows, which must be deferred to post-processing via the $\beta$-correction, introducing conditional work.
+In contrast, Barrett reduction operates directly in the standard residue class and avoids Montgomery-form conversions; Section~\ref{sec:apps} shows that in several important settings Montgomery reduction can nevertheless be used transparently, with the same outward behavior as Barrett.
+\end{remark}
+
+\section{Multi-precision reduction in $n^2+1$ digit multiplications}\label{sec:improved}
+
+This section gives the basic \emph{iterative} form of EMR; Section~\ref{sec:parallel} presents two further variants.
+In each round of the standard Montgomery scan, the current least significant digit~$\tilde c$ is eliminated using the precomputed~$\mu_r$ and a multiplication by~$p$, at a cost of $n+1$ digit multiplications.
+We observe that the same per-round reduction $\tilde c\, r^{-1} \bmod p$ can instead be computed as the integer product $\tilde c \cdot \rho_1$, where $\rho_1 = r^{-1}\bmod p$ is precomputed, at a cost of only $n$ digit multiplications.
+
+\begin{proposition}\label{prop:rho}
+For every digit $\tilde c\in\{0,\ldots,r-1\}$,
+\[
+  \tilde c \cdot r^{-1} \equiv \tilde c \cdot \rho_1 \pmod p,
+  \qquad \rho_1 = r^{-1} \bmod p.
+\]
+The integer product $\tilde c\,\rho_1$ satisfies $0\le \tilde c\,\rho_1 < rR$ and therefore has at most $n+1$ digits in base~$r$.
+\end{proposition}
+
+\begin{proof}
+The congruence is immediate from $\rho_1\equiv r^{-1}\pmod p$.
+The bound holds because $0\le \tilde c< r$ and $0\le \rho_1<p<R=r^n$, so $\tilde c\,\rho_1<r\cdot r^n=r^{n+1}$.
+\end{proof}
+
+Given a current sum~$S$ with least significant digit~$\tilde c$, write $S = \tilde c + rS'$ where $S'=\lfloor S/r\rfloor$.
+Then $S\cdot r^{-1} \equiv S' + \tilde c\cdot r^{-1} \equiv S' + \tilde c\,\rho_1 \pmod p$.
+Thus each round may be replaced by: remove~$\tilde c$, shift down by~$r$, and add the $(n{+}1)$-digit product $\tilde c\,\rho_1$.
+Because this product has $n+1$ digits, the shortcut is applicable while the remaining sum still has at least $n+1$ digits for the carry to propagate into, that is, for the first $n-1$ rounds.
+
+\begin{algorithm}[Iterative EMR]\label{alg:improved}
+Given $c=\sum_{i=0}^{2n-1}c'_i r^i$ with $0\le c<pR$, precomputed $\rho_1=r^{-1}\bmod p$, and $\mu_r=-p^{-1}\bmod r$:
+\begin{enumerate}
+\item Let $S=c$.
+\item \textbf{For} $j=0,1,\ldots,n-2$: let $\tilde c_j = S\bmod r$.
+  Set $S \leftarrow \lfloor S/r \rfloor + \tilde c_j\,\rho_1$.
+\item \textbf{Final round:} let $m = \mu_r(S\bmod r)\bmod r$.  Set $S \leftarrow (S+mp)/r$.
+  Subtract~$p$ as needed to normalize; see Section~\ref{sec:overflow} for the bound.
+\end{enumerate}
+\end{algorithm}
+
+\begin{theorem}\label{thm:n2p1}
+Algorithm~\ref{alg:improved} returns $cR^{-1}\bmod p$ using $n^2+1$ digit multiplications.
+\end{theorem}
+
+\begin{proof}
+At each step $j\in\{0,\ldots,n-2\}$ the current sum~$S$ with least significant digit~$\tilde c_j$ is replaced by $\lfloor S/r\rfloor + \tilde c_j\rho_1 \equiv Sr^{-1}\pmod p$.
+After $n-1$ such steps the sum is congruent to $cr^{-(n-1)}\pmod p$.
+The final standard round multiplies by $r^{-1}$ once more, giving $cr^{-n} = cR^{-1}\pmod p$.
+Each of the first $n-1$ steps costs $n$ digit multiplications (one digit times $n$-digit~$\rho_1$); the final round costs $n+1$.
+Total: $(n-1)n+(n+1)=n^2+1$.
+\end{proof}
+
+\begin{remark}
+For $n=1$ the improvement vanishes: both algorithms use two digit multiplications.
+For example, with $n=4$ (a 256-bit prime with 64-bit digits) the saving is three digit multiplications per reduction.
+\end{remark}
+
+\section{Parallel and logarithmic variants}\label{sec:parallel}
+
+Generalizing Proposition~\ref{prop:rho}, define $\rho_i= r^{-i}\bmod p$ for $i=1,\ldots,n-1$.
+
+\emph{Parallel EMR} eliminates all $n-1$ low limbs in a single pass:
+\begin{equation}\label{eq:parallel}
+  cr^{-(n-1)}\bmod p \;\equiv\; \sum_{i=n-1}^{2n-1} c'_i\, r^{i-(n-1)} \;+\; \sum_{i=0}^{n-2} c'_i\, \rho_{n-1-i} \pmod p,
+\end{equation}
+where the first sum is $\lfloor c/r^{n-1}\rfloor$ and the second captures the fractional part modulo~$p$.
+The $n-1$ products $c'_i\,\rho_{n-1-i}$ in the second sum are mutually independent, and one standard Montgomery round on the result completes the reduction in $(n-1)n+(n+1) = n^2+1$ digit multiplications, the same count as the iterative form.
+
+\emph{Log EMR} instead reduces the limbs in $\lceil\log_2 n\rceil$ passes, halving the number of limbs treated concurrently at each pass and finishing with one standard round; it retains the $n^2+1$ count while trading precomputed constants for shorter dependency chains.
+The three variants share the digit-multiplication count but differ sharply in their normalization cost, which we analyze in Section~\ref{sec:overflow}.
+
+\begin{remark}[EBR]\label{rem:ebr}
+The Barrett scan of Section~\ref{sec:baseline} admits the same optimization by duality~\cite{domb2025blog}, utilizing $\hat\rho_i=Rr^i\bmod p$ in the same, yet dual, manner.
+\end{remark}
+
+\section{Overflow and normalization}\label{sec:overflow}
+
+Throughout this section we take
+\[
+  0 \le c < pR,
+\]
+as holds for a product of residues $c=ab$ with $0\le a,b<p$.
+Each variant returns a value $S\equiv cR^{-1}\pmod p$; writing $x=cR^{-1}\bmod p\in[0,p)$ we have $S=x+\delta p$, and $\delta=\lfloor S/p\rfloor$ is the number of conditional subtractions of~$p$ needed to bring $S$ into $[0,p)$.
+We bound $\delta$ for each variant.
+Recall $\rho_k= r^{-k}\bmod p\in[1,p-1]$ and set
+\[
+  \Sigma_m := \sum_{k=1}^{m}\rho_k, \qquad 1\le \Sigma_m\le m(p-1).
+\]
+
+\begin{proposition}[Baseline]\label{prop:base}
+Standard Montgomery reduction (Section~\ref{sec:baseline}) returns $S<c/R+p<2p$, so $\delta\le1$: the result is $x$ or $x+p$.
+\end{proposition}
+
+\begin{proof}
+With $S_{j+1}=(S_j+m_jp)/r$ and $0\le m_j\le r-1$, induction gives $S_n=(c+pM)/R$ where $M=\sum_{j=0}^{n-1}m_jr^j\le(r-1)\frac{r^n-1}{r-1}=R-1$.
+Hence $S_n\le c/R+p(R-1)/R<c/R+p<2p$.
+\end{proof}
+
+The remaining variants are instances of one scheme.
+A \emph{reduction pass of width $b$} replaces a value $S=\sum_i s_ir^i$ by
+\[
+  \Pi_b(S) := \Big\lfloor S/r^b\Big\rfloor + \sum_{i=0}^{b-1} s_i\,\rho_{b-i}.
+\]
+
+\begin{lemma}\label{lem:pass}
+$\Pi_b(S)\equiv Sr^{-b}\pmod p$, and $\big\lfloor S/r^b\big\rfloor\le \Pi_b(S)\le S/r^b+(r-1)\Sigma_b$.
+\end{lemma}
+
+\begin{proof}
+Since $\lfloor S/r^b\rfloor=(S-\sum_{i<b}s_ir^i)/r^b\equiv(S-\sum_{i<b}s_ir^i)r^{-b}\pmod p$ and $\sum_{i<b}s_i\rho_{b-i}\equiv\sum_{i<b}s_ir^{i-b}=(\sum_{i<b}s_ir^i)r^{-b}\pmod p$, their sum is $Sr^{-b}\pmod p$.
+For the magnitude, $0\le s_i\le r-1$ and $\lfloor S/r^b\rfloor\le S/r^b$ give $\Pi_b(S)\le S/r^b+(r-1)\sum_{i<b}\rho_{b-i}=S/r^b+(r-1)\Sigma_b$, while $\Pi_b(S)\ge\lfloor S/r^b\rfloor$.
+\end{proof}
+
+A \emph{schedule} is a composition $b_1+\dots+b_T=n-1$ of the $n-1$ pre-final reductions; put $B_t=b_1+\dots+b_t$.
+EMR applies $\Pi_{b_1},\dots,\Pi_{b_T}$ to~$c$ and finishes with one standard Montgomery round.
+
+\begin{theorem}\label{thm:overflow}
+For any schedule, the EMR output satisfies $S\equiv cR^{-1}\pmod p$ and
+\[
+  S \;<\; \frac{c}{R} \;+\; \frac{r-1}{r}\sum_{t=1}^{T}\frac{\Sigma_{b_t}}{r^{(n-1)-B_t}} \;+\; p.
+\]
+\end{theorem}
+
+\begin{proof}
+Let $S^{(0)}=c$ and $S^{(t)}=\Pi_{b_t}(S^{(t-1)})$.
+Lemma~\ref{lem:pass} gives $S^{(t)}\le S^{(t-1)}/r^{b_t}+(r-1)\Sigma_{b_t}$ and $S^{(t)}\equiv S^{(t-1)}r^{-b_t}\pmod p$, so $S^{(T)}\equiv cr^{-(n-1)}\pmod p$.
+Unrolling the inequality and using $B_T=n-1$,
+\[
+  S^{(T)} \le \frac{c}{r^{n-1}} + (r-1)\sum_{t=1}^{T}\frac{\Sigma_{b_t}}{r^{(n-1)-B_t}}.
+\]
+The final standard round yields $S=(S^{(T)}+mp)/r\le S^{(T)}/r+(1-1/r)p<S^{(T)}/r+p$ with $S\equiv cr^{-n}=cR^{-1}\pmod p$.
+Dividing the displayed bound by~$r$ gives the claim.
+\end{proof}
+
+\begin{corollary}[Iterative EMR]\label{cor:iter}
+For the schedule $(1,\dots,1)$,
+\[
+  S \;<\; \frac{c}{R}+\rho_1\bigl(1-r^{-(n-1)}\bigr)+p.
+\]
+Writing $T_{\mathrm{iter}}:=\rho_1(1-r^{-(n-1)})$, we have
+\[
+  \delta \;\le\; \Bigl\lfloor \frac{c}{Rp}+\frac{T_{\mathrm{iter}}}{p}+1 \Bigr\rfloor
+  \;\le\; 2
+\]
+whenever $0\le c<pR$ and $\rho_1<p$; in particular $\delta\le 2$ for all~$n$.
+Moreover $\delta\le 1$ whenever $T_{\mathrm{iter}}<p-c/R$.
+\end{corollary}
+
+\begin{proof}
+Here $\Sigma_{b_t}=\rho_1$ and $B_t=t$, so $\sum_{t=1}^{n-1}\rho_1 r^{-(n-1-t)}=\rho_1\sum_{s=0}^{n-2}r^{-s}=\rho_1\frac{r}{r-1}\bigl(1-r^{-(n-1)}\bigr)$; multiplying by $(r-1)/r$ leaves $T_{\mathrm{iter}}$.
+Dividing the overflow bound by~$p$ gives $S/p<c/(Rp)+T_{\mathrm{iter}}/p+1$.
+Since $c/R<p$ and $T_{\mathrm{iter}}<\rho_1<p$, the bracket is below~$3$, so $\delta\le 2$.
+If $T_{\mathrm{iter}}<p-c/R$, then $S/p<2$ and $\delta\le 1$.
+\end{proof}
+
+\begin{corollary}[Parallel EMR]\label{cor:par}
+For the schedule $(n-1)$,
+\[
+  S \;<\; \frac{c}{R}+\frac{r-1}{r}\,\Sigma_{n-1}+p.
+\]
+Writing $T_{\mathrm{par}}:=\frac{r-1}{r}\,\Sigma_{n-1}$, we have
+\[
+  \delta \;\le\; \Bigl\lfloor \frac{c}{Rp}+\frac{T_{\mathrm{par}}}{p}+1 \Bigr\rfloor
+  \;\le\; n
+\]
+whenever $0\le c<pR$; in particular $\delta\le n$ for all~$n\ge 2$.
+Moreover $\delta\le 1$ whenever $T_{\mathrm{par}}<p-c/R$.
+\end{corollary}
+
+\begin{proof}
+The single pass has $B_1=n-1$, giving the overflow bound.
+Dividing by~$p$ yields $S/p<c/(Rp)+T_{\mathrm{par}}/p+1$.
+Using $c/R<p$ and $\Sigma_{n-1}\le(n-1)(p-1)$ gives $T_{\mathrm{par}}/p<\frac{r-1}{r}(n-1)$, hence $S/p<2+\frac{r-1}{r}(n-1)<n+1$ and $\delta\le n$.
+If $T_{\mathrm{par}}<p-c/R$, then $S/p<2$ and $\delta\le 1$.
+\end{proof}
+
+\begin{corollary}[Log EMR]\label{cor:log}
+For the halving schedule $D_0=n-1$, $b_t=\lceil D_{t-1}/2\rceil$, $D_t=\lfloor D_{t-1}/2\rfloor$,
+\[
+  S \;<\; \frac{c}{R}+\frac{r}{r-1}\,p+p.
+\]
+Writing $T_{\mathrm{log}}:=\frac{r}{r-1}\,p$, we have
+\[
+  \delta \;\le\; \Bigl\lfloor \frac{c}{Rp}+\frac{T_{\mathrm{log}}}{p}+1 \Bigr\rfloor
+  \;=\; \Bigl\lfloor \frac{c}{Rp}+\frac{r}{r-1}+1 \Bigr\rfloor
+  \;\le\; 3
+\]
+whenever $0\le c<pR$; in particular $\delta\le 3$ for all~$n\ge 2$ and $r\ge 2$, independently of~$n$.
+Moreover $\delta\le 1$ whenever $T_{\mathrm{log}}<p-c/R$.
+\end{corollary}
+\begin{proof}
+Here $(n-1)-B_t=D_t$, a strictly decreasing sequence of nonnegative integers, hence the $D_t$ are distinct; and $b_t=\lceil D_{t-1}/2\rceil\le D_t+1$, so $\Sigma_{b_t}\le b_t(p-1)<(D_t+1)p$.
+Therefore, summing over distinct $D_t$,
+\[
+  \sum_{t}\frac{\Sigma_{b_t}}{r^{D_t}} < p\sum_{d=0}^{\infty}(d+1)r^{-d} = \frac{r^2}{(r-1)^2}\,p,
+\]
+and multiplying by $(r-1)/r$ gives $T_{\mathrm{log}}/p=r/(r-1)$.
+Adding $c/R<p$ yields $S/p<c/(Rp)+r/(r-1)+1\le 2+r/(r-1)<4$, so $\delta\le 3$.
+If $T_{\mathrm{log}}<p-c/R$, then $S/p<2$ and $\delta\le 1$.
+\end{proof}
+
+\begin{remark}[Iterative EMR on standard $256$-bit moduli]\label{rem:ecdsa-delta}
+Fix $w=64$ and $n=4$ limbs ($R=2^{256}$) and apply iterative EMR (Corollary~\ref{cor:iter}).
+The four moduli below are the base and scalar primes for P-256~\cite{nistfips186} and secp256k1~\cite{sec2}; each is a $256$-bit prime with $p<R$.
+The table lists $\rho_1=r^{-1}\bmod p$, the $\delta$ bound from Corollary~\ref{cor:iter} at a product $c<p^2$ and at a Montgomery input $c<pR$, and the offset $R-p$.
+\begin{center}
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{@{}lrrcc@{}}
+\hline
+Modulus & $R-p$ & $\rho_1/p$ & $c<p^2$ & $c<pR$ \\
+\hline
+P-256 base & $224$ bits & $\ll 1$ & $\delta\le 1$ & $\delta\le 2$ \\
+P-256 scalar & $224$ bits & $0.80$ & $\delta\le 2$ & $\delta\le 2$ \\
+secp256k1 base & $2^{32}+977$ & $0.84$ & $\delta\le 2$ & $\delta\le 2$ \\
+secp256k1 scalar & $129$ bits & $0.29$ & $\delta\le 2$ & $\delta\le 2$ \\
+\hline
+\end{tabular}
+\end{center}
+\noindent
+Only the P-256 base modulus satisfies $T_{\mathrm{iter}}<p-c/R$ at $c<p^2$, so a single conditional subtraction suffices there; the generic bound $\delta\le 2$ is tight for the other three moduli.
+\end{remark}
+
+\begin{remark}[The non-causal overflow of EBR]
+The dual scheme, EBR (Remark~\ref{rem:ebr}), has a structurally different overflow.
+In Theorem~\ref{thm:overflow} the correction injected by pass~$t$ is attenuated by the factor $r^{-((n-1)-B_t)}\le1$ supplied by the divisions of all later passes; this geometric contraction is what bounds the Montgomery-side overflow in Corollaries~\ref{cor:iter}--\ref{cor:log}.
+Under the duality $R\leftrightarrow R^{-1}$ with the scan reversed from least to most significant, the homologous factor for EBR is $r^{+((n-1)-B_t)}\ge1$: corrections fall in already-processed high-order positions, where no later division acts, and are therefore \emph{amplified} rather than contracted.
+The excess thus cannot be absorbed causally; it must be removed afterwards through the precomputed $\beta$-correction together with up to $k=\lceil(R+1)/p\rceil$ residual copies of~$p$.
+This asymmetry, not any difference in the digit-multiplication count, is why EMR, and not EBR, is the practical algorithm.
+\end{remark}
+
+\section{Implementation}\label{sec:impl}
+
+Contents TBD.
+
+\section{Applications}\label{sec:apps}
+
+The EMR replaces the reduction loop in Montgomery-form modular multiplication.
+Standard-form multiplication by a constant~$K$ is available by storing $RK\bmod p$ instead of~$K$: the multiplier returns $R^{-1}\cdot RK\cdot x = Kx$, eliminating Montgomery-form conversions.
+Two important cryptographic primitives can exploit this directly.
+
+\paragraph{NTT and arithmetic hash functions.}
+In a number-theoretic transform all multiplications are by precomputed twiddle factors, and in constant-matrix hash functions such as Poseidon2~\cite{poseidon2} all field multiplications are by constant matrix entries.
+Storing each constant~$K$ as $RK\bmod p$ makes every such multiplication transparent: a Montgomery multiplier delivers $Kx$ with no extra conversion.
+
+\paragraph{Projective elliptic-curve addition.}
+The complete projective addition formula of Renes, Costello, and Batina~\cite{renes2016complete} produces an output $(X_o,Y_o,Z_o)$ from inputs $(X_1,Y_1,Z_1)$ and $(X_2,Y_2,Z_2)$.
+If each base-field multiplier introduces a factor~$R^{-1}$, the output is scaled by a uniform factor~$R^{-3}$.
+Since the affine representation normalizes the $x$ and $y$ coordinates by~$Z$, this common factor cancels and the result is correct without any conversion.
+
+\section*{Acknowledgments}
+
+The authors thank Remco Bloemen, Xander van der Goot, Koh Wei Jie, Suyash Bagad, Karthik Inbasekar, Tomer Solberg, and Omer Shlomovits for helpful discussions.
+
+\bibliographystyle{amsplain}
+\bibliography{references}
+
+\end{document}

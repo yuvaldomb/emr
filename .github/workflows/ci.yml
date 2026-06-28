@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  formal:
+    name: Lean proofs
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: formal
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Lean
+        uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: formal
+
+      - name: Fetch Mathlib cache
+        run: lake exe cache get
+
+      - name: Build EmrFormal
+        run: lake build EmrFormal
+
+      - name: Axiom audit
+        run: lake env lean Audit.lean
+
+  paper:
+    name: LaTeX paper
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: paper
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install TeX Live
+        uses: TeX-Live/setup-texlive-action@v3
+        with:
+          package-set: small
+          packages: |
+            amscls
+            amsmath
+            geometry
+            mathtools
+            url
+            latexmk
+
+      - name: Build PDF
+        run: make

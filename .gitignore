@@ -1,0 +1,61 @@
+# --- LaTeX (paper/) ---
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.toc
+paper/*.lof
+paper/*.lot
+paper/*.fls
+paper/*.fdb_latexmk
+paper/*.synctex.gz
+paper/*.bbl
+paper/*.blg
+paper/*.bcf
+paper/*.run.xml
+paper/*.blx.bib
+paper/*.nav
+paper/*.snm
+paper/*.vrb
+paper/*.xdv
+# PDF is tracked in git; regenerate with: cd paper && make
+
+# --- Lean 4 / Lake (formal/) ---
+# Dependencies and build cache (restore with: lake exe cache get && lake build)
+**/.lake/
+*.olean
+*.ilean
+*.trace
+*.hash
+/build/
+
+# --- Python (analysis/) ---
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- OS & editors ---
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+*~
+*.swp
+*.swo
+.idea/
+.vscode/
+*.code-workspace
+
+# --- Secrets / local env ---
+.env
+.env.*
+!.env.example
